@@ -1,86 +1,122 @@
 import streamlit as st
 import pandas as pd
-import tsfel
-from sklearn.preprocessing import StandardScaler
 import numpy as np
-from ts2vec import TS2Vec
-from sklearn.ensemble import IsolationForest
-from sklearn.cluster import KMeans
-import matplotlib.pyplot as plt
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-st.title("TS2Vec + TSFEL Anomaly Detection")
+# Define functions (paste your code here)
+def load_df_pidws(uploaded_file):
+    df_pidws = pd.read_excel(uploaded_file)
+    df_pidws.columns = df_pidws.columns.str.replace('\n', ' ').str.strip()
+    df_pidws = df_pidws.rename(columns={'Avg. Perim. Pos (m)': 'chainage'})
+    df_pidws['DateTime'] = pd.to_datetime(df_pidws['Date'] + ' ' + df_pidws['Time'], format='%d-%m-%Y %H:%M:%S')
+    return df_pidws
 
-uploaded = st.file_uploader("Upload sensor CSV (with columns KAN, BV5, BV4, BV3, BV2, BV1, VIR)", type=["csv"])
+def load_df_lds(uploaded_file):
+    df_lds = pd.read_excel(uploaded_file)
+    df_lds = df_lds.rename(columns={
+        'Leak_Size_m3_hr': 'leak size',
+        'Chainage_Location_km': 'chainage'
+    })
+    df_lds['DateTime'] = pd.to_datetime(df_lds['Date'].astype(str) + ' ' + df_lds['Time'])
+    return df_lds
 
-if uploaded is not None:
-    df3 = pd.read_csv(uploaded)
+def parse_duration(dur_str):
+    if pd.isna(dur_str):
+        return pd.Timedelta(0)
+    dur_str = str(dur_str).strip().lower().replace(' ', '')
+    mins = 0
+    secs = 0
+    if 'm' in dur_str:
+        m_part = dur_str.split('m')[0]
+        if m_part.isdigit():
+            mins = int(m_part)
+        dur_str = dur_str.split('m')[-1]
+    if 's' in dur_str:
+        s_part = dur_str.replace('s', '')
+        if s_part.isdigit():
+            secs = int(s_part)
+    return pd.Timedelta(minutes=mins, seconds=secs)
 
-    sensor_cols = ['KAN', 'BV5', 'BV4', 'BV3', 'BV2', 'BV1', 'VIR']
+def classify_pilferage(pidws_df, lds_df, chainage_tol=1.0, time_window_hours=24):
+    classified = []
+    pidws_df = pidws_df.copy()
+    pidws_df['duration_td'] = pidws_df['Event Duration'].apply(parse_duration)
+    pidws_df['end_time'] = pidws_df['DateTime'] + pidws_df['duration_td']
+    for _, event in pidws_df.iterrows():
+        window_end = event['end_time'] + pd.Timedelta(hours=time_window_hours)
+        mask = (lds_df['DateTime'] > window_end) & \
+               (np.abs(lds_df['chainage'] - event['chainage']) <= chainage_tol)
+        matches = lds_df[mask].copy()
+        if not matches.empty:
+            matches['linked_event_time'] = event['DateTime']
+            matches['linked_chainage'] = event['chainage']
+            time_diff_seconds = (matches['DateTime'] - window_end).dt.total_seconds()
+            matches['pilferage_score'] = 1 / (1 + time_diff_seconds / 3600)
+            classified.append(matches)
+    if classified:
+        return pd.concat(classified, ignore_index=True)
+    return pd.DataFrame()
 
-    # basic check
-    missing = [c for c in sensor_cols if c not in df3.columns]
-    if missing:
-        st.error(f"Missing columns in file: {missing}")
-    else:
-        # preprocessing
-        for col in sensor_cols:
-            df3[col] = pd.to_numeric(df3[col], errors='coerce')
-            df3[col] = df3[col].fillna(df3[col].mean())
+st.set_page_config(page_title="PIDWS-LDS Pilferage Classifier", layout="wide")
 
-        X = df3[sensor_cols].values
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
+st.title("🔍 Pipeline Pilferage Classification: PIDWS vs LDS Events")
 
-        cfg = tsfel.get_features_by_domain()
+col1, col2 = st.columns(2)
+with col1:
+    pidws_file = st.file_uploader("Upload df_pidws_III.xlsx", type=["xlsx"], key="pidws")
+with col2:
+    lds_file = st.file_uploader("Upload df_lds_III.xlsx", type=["xlsx"], key="lds")
 
-        feature_matrix = None
-        for idx, col in enumerate(sensor_cols):
-            feats = tsfel.time_series_features_extractor(cfg, X_scaled[:, idx])
-            if feature_matrix is None:
-                feature_matrix = feats
-            else:
-                feature_matrix = pd.concat([feature_matrix, feats], axis=1)
+if pidws_file and lds_file:
+    with st.spinner("Loading and processing data..."):
+        df_pidws = load_df_pidws(pidws_file)
+        df_lds = load_df_lds(lds_file)
 
-        def to_windows(arr, window=64, step=16):
-            return np.array([arr[i:i+window] for i in range(0, len(arr)-window+1, step)])
+    st.subheader("📊 Data Previews")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.dataframe(df_pidws[['DateTime', 'chainage', 'Event Duration']].head())
+    with col2:
+        st.dataframe(df_lds[['DateTime', 'chainage', 'leak size']].head())
 
-        X_windows = to_windows(X, window=64, step=16)
+    # Parameters
+    st.subheader("⚙️ Classification Parameters")
+    col1, col2 = st.columns(2)
+    chainage_tol = col1.slider("Chainage Tolerance (km)", 0.1, 5.0, 1.0)
+    time_window = col2.slider("Time Window After PIDWS (hours)", 1, 168, 24)
 
-        model = TS2Vec(input_dims=len(sensor_cols), device='cpu')
-        with st.spinner("Training TS2Vec model..."):
-            model.fit(X_windows)
+    if st.button("🚀 Classify Pilferage Events"):
+        with st.spinner("Classifying..."):
+            pilferage_leaks = classify_pilferage(df_pidws, df_lds, chainage_tol, time_window)
+        
+        if not pilferage_leaks.empty:
+            st.success(f"✅ Found {len(pilferage_leaks)} pilferage leak instances!")
+            
+            st.subheader("🔥 Pilferage Leaks")
+            st.dataframe(pilferage_leaks[['DateTime', 'chainage', 'leak size', 'pilferage_score', 'linked_event_time']].sort_values('pilferage_score', ascending=False))
+            
+            # Download
+            csv = pilferage_leaks.to_csv(index=False).encode('utf-8')
+            st.download_button("💾 Download Pilferage CSV", csv, "pilferage_leaks.csv", "text/csv")
+            
+            # Visualization
+            st.subheader("📈 Visualization")
+            fig = px.scatter(pilferage_leaks, x='DateTime', y='chainage', size='pilferage_score', color='leak size',
+                             hover_data=['linked_event_time', 'linked_chainage'],
+                             title="Pilferage Leaks: Score vs Time & Chainage")
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Stats
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Matches", len(pilferage_leaks))
+            col2.metric("Avg Score", pilferage_leaks['pilferage_score'].mean())
+            col3.metric("Max Score", pilferage_leaks['pilferage_score'].max())
+        else:
+            st.warning("❌ No pilferage leaks classified. Try adjusting parameters.")
 
-        seq_embeds = model.encode(X_windows)
-        seq_embeds_averaged = np.mean(seq_embeds, axis=1)
-
-        anomaly_detector_tsfel = IsolationForest(contamination=0.05, random_state=42)
-        anomaly_labels_tsfel = anomaly_detector_tsfel.fit_predict(feature_matrix)
-        anomalous_indices_tsfel = np.where(anomaly_labels_tsfel == -1)[0]
-
-        kmeans = KMeans(n_clusters=3, random_state=42, n_init=10)
-        labels_ts2vec = kmeans.fit_predict(seq_embeds_averaged)
-        distances_ts2vec = np.linalg.norm(
-            seq_embeds_averaged - kmeans.cluster_centers_[labels_ts2vec],
-            axis=1
-        )
-        threshold_ts2vec = np.percentile(distances_ts2vec, 95)
-        anomalous_windows_ts2vec = np.where(distances_ts2vec > threshold_ts2vec)[0]
-
-        st.subheader("Detected anomalies")
-        st.write("TSFEL anomalies at indices:", anomalous_indices_tsfel.tolist())
-        st.write("TS2Vec anomalous windows:", anomalous_windows_ts2vec.tolist())
-
-        fig, ax = plt.subplots(figsize=(10, 4))
-        ax.plot(distances_ts2vec, label="Anomaly Score (TS2Vec)")
-        ax.scatter(
-            anomalous_windows_ts2vec,
-            distances_ts2vec[anomalous_windows_ts2vec],
-            color="red",
-            label="Anomalies (TS2Vec)"
-        )
-        ax.set_xlabel("Window index")
-        ax.set_ylabel("Anomaly score (distance)")
-        ax.set_title("TS2Vec Embedding Anomaly Detection")
-        ax.legend()
-
-        st.pyplot(fig)
+    # All LDS timeline
+    st.subheader("🕐 All LDS Events Timeline")
+    fig_timeline = px.timeline(df_lds, x_start="DateTime", x_end="DateTime", y="chainage", color="leak size")
+    st.plotly_chart(fig_timeline, use_container_width=True)
