@@ -1,8 +1,6 @@
 streamlit
 pandas
 numpy
+plotly
+openpyxl
 scikit-learn
-matplotlib
-tsfel
-ts2vec
-torch
