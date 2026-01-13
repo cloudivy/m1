@@ -1,134 +1,175 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import timedelta
 import matplotlib.pyplot as plt
 import seaborn as sns
-import io
-import warnings
-warnings.filterwarnings('ignore')
+from datetime import timedelta
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-# Plot config
-plt.style.use('default')
-sns.set_palette("husl")
-plt.rcParams['figure.dpi'] = 150
+# Page config
+st.set_page_config(page_title="LDS-PIDWS Correlation", layout="wide", page_icon="📊")
 
-st.set_page_config(page_title="Pipeline Pilferage", layout="wide")
+st.title("🛢️ LDS-PIDWS Pilferage Detection Dashboard")
+st.markdown("Interactive analysis of Leak Detection System (LDS) and Pipeline Integrity Data Warehouse System (PIDWS) correlation for pilferage classification.")
 
-st.title("🛢️ Pipeline Pilferage Detection")
-st.markdown("---")
+# File upload
+uploaded_pidws = st.file_uploader("Upload PIDWS data (dfpidwsIII.xlsx)", type="xlsx", key="pidws")
+uploaded_lds = st.file_uploader("Upload LDS data (dfldsIII.xlsx)", type="xlsx", key="lds")
 
-# Sidebar
-with st.sidebar:
-    st.header("📁 Upload Data")
-    pidws_file = st.file_uploader("PIDWS (xlsx)", type="xlsx")
-    lds_file = st.file_uploader("LDS (xlsx)", type="xlsx")
+if uploaded_pidws is not None and uploaded_lds is not None:
+    # Load data
+    dfpidws = pd.read_excel(uploaded_pidws)
+    dflds = pd.read_excel(uploaded_lds)
     
-    st.header("⚙️ Parameters")
-    chainage_tol = st.slider("Chainage Tol (km)", 0.1, 2.0, 0.5)
-    time_window = st.slider("Time Window (hrs)", 12, 72, 48)
+    st.success(f"✅ Loaded PIDWS: {len(dfpidws)} rows | LDS: {len(dflds)} rows")
     
-    if st.button("🚀 ANALYZE", type="primary") and pidws_file and lds_file:
-        with st.spinner("Analyzing..."):
-            st.session_state.processed = True
-            st.session_state.pidws = pd.read_excel(pidws_file)
-            st.session_state.lds = pd.read_excel(lds_file)
-            st.session_state.params = (chainage_tol, time_window)
-        st.rerun()
-
-if 'processed' in st.session_state:
-    # Process data
-    df_pidws = st.session_state.pidws
-    df_lds = st.session_state.lds
-    tol, window = st.session_state.params
+    # Sidebar parameters
+    st.sidebar.header("Classification Parameters")
+    chainage_tol = st.sidebar.slider("Chainage Tolerance (km)", 0.1, 2.0, 0.5, 0.1)
+    time_window = st.sidebar.slider("Time Window (hours)", 12, 72, 48, 6)
     
-    # Preprocessing functions
+    # Parse datetime PIDWS
     @st.cache_data
-    def clean_pidws(df):
-        df = df.copy()
-        df['DateTime'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Time'].astype(str))
-        df['duration_td'] = df['Event Duration'].astype(str).str.extract('(\d+)m?').fillna(0).astype(int)
-        df['end_time'] = df['DateTime'] + pd.to_timedelta(df['duration_td'], unit='m')
+    def parse_datetime(df):
+        df['DateTime'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Time'], format='%d-%m-%Y %H:%M:%S')
         return df
     
-    @st.cache_data
-    def clean_lds(df):
-        df = df.copy()
-        df['DateTime'] = pd.to_datetime(df['Date'].astype(str) + ' ' + df['Time'].astype(str))
-        return df
+    dfpidws = parse_datetime(dfpidws)
+    dflds = parse_datetime(dflds)
     
-    df_pidws = clean_pidws(df_pidws)
-    df_lds = clean_lds(df_lds)
-    
-    # Classification
+    # Parse duration
     @st.cache_data
-    def detect_pilferage(pidws, lds, tol, window):
-        results = []
-        for _, row in pidws.iterrows():
-            end = row['end_time'] + pd.Timedelta(hours=window)
-            mask = (lds['DateTime'] > end) & (np.abs(lds['chainage'] - row['chainage']) <= tol)
-            matches = lds[mask].copy()
+    def parse_duration(dur_str):
+        if pd.isna(dur_str):
+            return pd.Timedelta(0)
+        dur_str = str(dur_str).strip().lower().replace(' ', '')
+        mins, secs = 0, 0
+        if 'm' in dur_str:
+            m_part = dur_str.split('m')[0]
+            if m_part.isdigit():
+                mins = int(m_part)
+            dur_str = dur_str.split('m')[1]
+        if 's' in dur_str:
+            s_part = dur_str.replace('s', '')
+            if s_part.isdigit():
+                secs = int(s_part)
+        return pd.Timedelta(minutes=mins, seconds=secs)
+    
+    dfpidws['duration_td'] = dfpidws['Event Duration'].apply(parse_duration)
+    dfpidws['end_time'] = dfpidws['DateTime'] + dfpidws['duration_td']
+    
+    # Classification function
+    @st.cache_data
+    def classify_pilferage(pidws_df, lds_df, chainage_tol, time_window_hours):
+        classified = []
+        for _, event in pidws_df.iterrows():
+            window_end = event['end_time'] + pd.Timedelta(hours=time_window_hours)
+            mask = (lds_df['DateTime'] > event['end_time']) & \
+                   (lds_df['DateTime'] <= window_end) & \
+                   (np.abs(lds_df['chainage'] - event['chainage']) <= chainage_tol)
+            matches = lds_df[mask].copy()
             if not matches.empty:
-                matches['pilferage_score'] = 1 / (1 + (matches['DateTime'] - end).dt.total_seconds()/3600)
-                results.append(matches)
-        return pd.concat(results, ignore_index=True) if results else pd.DataFrame()
+                matches['linked_event_time'] = event['DateTime']
+                matches['linked_chainage'] = event['chainage']
+                matches['pilferage_score'] = 1 * (1 - (matches['DateTime'] - event['end_time']).dt.total_seconds() / 3600 / time_window_hours)
+                classified.append(matches)
+        if classified:
+            return pd.concat(classified, ignore_index=True)
+        return pd.DataFrame()
     
-    pilferage = detect_pilferage(df_pidws, df_lds, tol, window)
+    pilferage_leaks = classify_pilferage(dfpidws, dflds, chainage_tol, time_window)
     
-    # Classify full dataset
-    df_lds['is_pilferage'] = df_lds.index.isin(pilferage.index) if not pilferage.empty else False
+    # Add classification to LDS
+    dflds_classified = dflds.copy()
+    dflds_classified['is_pilferage'] = False
+    if not pilferage_leaks.empty:
+        pilferage_ids = pilferage_leaks[['DateTime', 'chainage']].drop_duplicates()
+        mask_pilferage = dflds_classified.set_index(['DateTime', 'chainage']).index.isin(
+            pilferage_ids.set_index(['DateTime', 'chainage']).index
+        )
+        dflds_classified.loc[mask_pilferage, 'is_pilferage'] = True
     
-    # === DASHBOARD ===
-    c1, c2 = st.columns(2)
-    with c1:
-        st.metric("LDS Events", len(df_lds))
-        st.metric("PIDWS Events", len(df_pidws))
-        st.metric("🟡 Pilferage", len(pilferage))
+    # Metrics
+    col1, col2, col3, col4 = st.columns(4)
+    total_lds = len(dflds)
+    pilferage_count = dflds_classified['is_pilferage'].sum()
+    pilferage_rate = (pilferage_count / total_lds * 100) if total_lds > 0 else 0
+    col1.metric("Total LDS Events", total_lds)
+    col2.metric("Pilferage Events", pilferage_count)
+    col3.metric("Pilferage Rate", f"{pilferage_rate:.1f}%")
+    col4.metric("Chainage Clusters", len(pilferage_leaks['linked_chainage'].value_counts()) if not pilferage_leaks.empty else 0)
     
-    with c2:
-        pct = len(pilferage)/len(df_lds)*100 if len(df_lds) else 0
-        st.metric("Detection Rate", f"{pct:.1f}%")
+    # Visualizations
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Overview", "🗺️ Chainage Dist.", "⏱️ Time Series", "📊 Leak Analysis"])
     
-    # Charts
-    col1, col2 = st.columns(2)
-    with col1:
-        fig, ax = plt.subplots(figsize=(8,5))
-        ax.hist(df_pidws.chainage, alpha=0.6, label='PIDWS', color='orange')
-        ax.hist(df_lds.chainage, alpha=0.6, label='Leaks', color='blue')
-        if len(pilferage):
-            ax.axvline(pilferage.chainage.mean(), color='red', ls='--', label='Pilferage')
-        ax.legend()
-        ax.set_xlabel('Chainage (km)')
-        st.pyplot(fig)
+    with tab1:
+        fig = make_subplots(rows=2, cols=2, subplot_titles=("Chainage Distribution", "Temporal Pattern", "Leak Size vs Classification", "Chainage Scatter"))
+        
+        # Chainage hist
+        fig.add_trace(go.Histogram(x=dfpidws['chainage'], name="PIDWS (Digging)", nbinsx=30, opacity=0.7), row=1, col=1)
+        fig.add_trace(go.Histogram(x=dflds['chainage'], name="LDS Leaks", nbinsx=30, opacity=0.7), row=1, col=1)
+        if not pilferage_leaks.empty:
+            fig.add_vline(x=pilferage_leaks['linked_chainage'].mean(), line_dash="dash", line_color="red", row=1, col=1)
+        
+        # Time series
+        all_events = pd.concat([
+            dfpidws[['DateTime', 'chainage']].assign(type='Digging'),
+            dflds[['DateTime', 'chainage']].assign(type='Leak'),
+            pilferage_leaks[['DateTime', 'linked_chainage']].rename(columns={'linked_chainage': 'chainage'}).assign(type='Pilferage')
+        ], ignore_index=True)
+        time_pivot = all_events.groupby('DateTime')['type'].value_counts().unstack(fill_value=0)
+        for col in time_pivot.columns:
+            fig.add_trace(go.Scatter(x=time_pivot.index, y=time_pivot[col], mode='lines', name=col), row=1, col=2)
+        
+        # Boxplot leak size
+        fig.add_trace(go.Box(y=dflds_classified[dflds_classified['is_pilferage']]['leak size'], name="Pilferage"), row=2, col=1)
+        fig.add_trace(go.Box(y=dflds_classified[~dflds_classified['is_pilferage']]['leak size'], name="Other"), row=2, col=1)
+        
+        # Scatter
+        colors = ['red' if x else 'blue' for x in dflds_classified['is_pilferage']]
+        fig.add_trace(go.Scatter(x=dflds_classified['DateTime'], y=dflds_classified['chainage'], mode='markers', marker=dict(color=colors, size=8, opacity=0.6), name="Leaks"), row=2, col=2)
+        
+        fig.update_layout(height=600, showlegend=True)
+        st.plotly_chart(fig, use_container_width=True)
     
-    with col2:
-        fig, ax = plt.subplots(figsize=(6,5))
-        df_lds.boxplot(column='leak size', by='is_pilferage', ax=ax)
-        ax.set_title('Leak Size by Type')
-        st.pyplot(fig)
+    with tab2:
+        if not pilferage_leaks.empty:
+            chainage_stats = pilferage_leaks.groupby('linked_chainage')['leak size'].agg(['count', 'mean', 'max']).round(1).sort_values('count', ascending=False).head(10)
+            st.subheader("Top Chainage Clusters")
+            st.dataframe(chainage_stats)
+            
+            fig_hist = px.histogram(pilferage_leaks, x='linked_chainage', nbins=50, title="Pilferage Chainage Distribution")
+            st.plotly_chart(fig_hist, use_container_width=True)
     
-    # Timeline
-    st.subheader("Timeline")
-    fig, ax = plt.subplots(figsize=(12,6))
-    colors = ['red' if x else 'blue' for x in df_lds.is_pilferage]
-    sizes = np.clip(df_lds['leak size'], 30, 150)
-    ax.scatter(df_lds.DateTime, df_lds.chainage, c=colors, s=sizes, alpha=0.7)
-    ax.set_xlabel('Time')
-    ax.set_ylabel('Chainage')
-    ax.grid(alpha=0.3)
-    ax.legend(['Pilferage', 'Other'])
-    plt.xticks(rotation=45)
-    st.pyplot(fig)
+    with tab3:
+        if not pilferage_leaks.empty:
+            fig_time = px.line(time_pivot, title="Events per Hour", markers=True)
+            st.plotly_chart(fig_time, use_container_width=True)
     
-    # Table
-    if len(pilferage):
-        st.subheader("Top Pilferage Locations")
-        top = pilferage.groupby('chainage')['leak size'].agg(['count','mean']).round(2).sort_values('count', ascending=False).head()
-        st.dataframe(top)
+    with tab4:
+        st.subheader("Classification Summary")
+        st.dataframe(dflds_classified['is_pilferage'].value_counts())
+        
+        if not pilferage_leaks.empty:
+            st.subheader("Pilferage Stats")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Avg Leak Size", f"{pilferage_leaks['leak size'].mean():.0f}")
+            with col2:
+                st.metric("Avg Pilferage Score", f"{pilferage_leaks['pilferage_score'].mean():.3f}")
+            
+            fig_box = px.box(dflds_classified, x='is_pilferage', y='leak size', title="Leak Size: Pilferage vs Others")
+            st.plotly_chart(fig_box)
     
-    # Download
-    csv = df_lds.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 Download Results", csv, "pilferage_analysis.csv")
+    # Download classified data
+    csv = dflds_classified.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Download Classified LDS Data", csv, "lds_classified.csv", "text/csv")
 
 else:
-    st.info("👆 Upload Excel files & click ANALYZE")
+    st.info("👆 Please upload both PIDWS and LDS Excel files to get started.")
+
+# Footer
+st.markdown("---")
+st.markdown("Built for pipeline operations analysis | Powered by Streamlit")[file:1]
