@@ -10,7 +10,7 @@ from io import BytesIO
 plt.rcParams['figure.max_open_warning'] = 50
 
 st.set_page_config(page_title="Leak Detection Dashboard", layout="wide")
-st.title("🔍 Pipeline Digging vs. Leak Events Dashboard")
+st.title("🔍 Identifying and implementing newer methods of quick detection of location of leaks in the mainline ")
 
 # --- Enhanced data loading (SAFE - works without repo files) ---
 tab1, tab2 = st.tabs(["📁 Upload Files", "📊 Analysis"])
