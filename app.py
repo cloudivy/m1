@@ -1,163 +1,85 @@
 import streamlit as st
 import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
-import numpy as np
-from io import BytesIO
+import io
+import traceback
 
-# Configure matplotlib to prevent memory warnings
-plt.rcParams['figure.max_open_warning'] = 50
+st.set_page_config(page_title="SCC Probability Visualization", layout="wide")
 
-st.set_page_config(page_title="Leak Detection Dashboard", layout="wide")
-st.title("🔍 Pipeline Digging vs. Leak Events Dashboard")
+st.title("🔬 SCC Probability Estimation - CHAKSU MATHURA SECTION")
 
-# --- Enhanced data loading (SAFE - works without repo files) ---
-tab1, tab2 = st.tabs(["📁 Upload Files", "📊 Analysis"])
+uploaded_file = st.file_uploader("Choose scc_IV_dataset.xlsx", type=["xlsx"])
 
-with tab1:
-    uploaded_files = st.file_uploader(
-        "Upload Excel files:",
-        type=['xlsx'], accept_multiple_files=True,
-        help="Upload: df_pidws.xlsx, df_manual_digging.xlsx, df_lds_IV.xlsx"
-    )
-    
-    if uploaded_files:
-        file_dict = {f.name: f for f in uploaded_files}
-        st.success(f"✅ Uploaded {len(uploaded_files)} file(s)")
-        
-        # Load dataframes safely
-        try:
-            df_pidws = pd.read_excel(file_dict['df_pidws.xlsx']) if 'df_pidws.xlsx' in file_dict else pd.DataFrame()
-            df_manual_digging = pd.read_excel(file_dict['df_manual_digging.xlsx']) if 'df_manual_digging.xlsx' in file_dict else pd.DataFrame()
-            df_lds_IV = pd.read_excel(file_dict['df_lds_IV.xlsx']) if 'df_lds_IV.xlsx' in file_dict else pd.DataFrame()
-            
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Digging Data", f"{len(df_manual_digging):,}", delta="✅")
-            col2.metric("Leak Data", f"{len(df_lds_IV):,}", delta="✅")
-            col3.metric("PIDWS Data", f"{len(df_pidws):,}", delta="✅")
-            
-        except Exception as e:
-            st.error(f"❌ Error reading files: {e}")
-            st.stop()
-    else:
-        st.info("👆 Upload your Excel files to start analysis")
-        st.stop()
+if uploaded_file is not None:
+    try:
+        # Clear previous plots
+        plt.close('all')
 
-# Switch to analysis tab for inputs
-with tab2:
-    st.write("Imported matplotlib.pyplot as plt and seaborn as sns.")
-    
-    # Data previews
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Manual Digging Data")
-        st.dataframe(df_manual_digging[['Event Duration', 'Original_chainage', 'DateTime']].head())
-    
-    with col2:
-        st.subheader("LDS IV Data") 
-        st.dataframe(df_lds_IV.head())
-    
-    # Data prep (your exact code)
-    df_manual_digging['Date_new'] = df_manual_digging['DateTime'].dt.date
-    df_manual_digging['Time_new'] = df_manual_digging['DateTime'].dt.time
-    
-    # LDS IV prep (your exact code)
-    df_lds_IV['Date'] = pd.to_datetime(df_lds_IV['Date'])
-    df_lds_IV['Time'] = pd.to_timedelta(df_lds_IV['Time'].astype(str))
-    df_lds_IV['DateTime'] = df_lds_IV['Date'] + df_lds_IV['Time']
-    
-    st.success("✅ Data preprocessing complete")
-    
-    # Interactive inputs
-    col1, col2 = st.columns(2)
-    with col1:
-        target_chainage = st.number_input(
-            "🎯 Target Chainage (km):",
-            value=25.4, min_value=0.0, step=0.1
-        )
-    with col2:
-        tolerance = st.number_input(
-            "Tolerance (±km):", value=1.0, min_value=0.1, step=0.1
-        )
-    
-    if st.button("🚀 Analyze Chainage", type="primary"):
-        # Filter data (your exact logic)
-        df_digging_filtered = df_manual_digging[
-            abs(df_manual_digging['Original_chainage'] - target_chainage) <= tolerance
-        ].copy()
-        
-        df_leaks_filtered = df_lds_IV[
-            abs(df_lds_IV['chainage'] - target_chainage) <= tolerance
-        ].copy()
-        
-        # Metrics
-        col1, col2 = st.columns(2)
-        col1.metric("🔵 Digging Events", len(df_digging_filtered))
-        col2.metric("🔴 Leak Events", len(df_leaks_filtered))
-        
-        # Main scatter plot (your EXACT visualization)
-        plt.close('all')  # Clear previous figures
-        fig, ax = plt.subplots(figsize=(16, 10))
-        
-        if not df_digging_filtered.empty:
-            sns.scatterplot(
-                data=df_digging_filtered, x='DateTime', y='Original_chainage',
-                color='blue', label='Digging Events', marker='o', s=60, ax=ax
-            )
-        
-        if not df_leaks_filtered.empty:
-            sns.scatterplot(
-                data=df_leaks_filtered, x='DateTime', y='chainage',
-                color='red', label='Leak Events', marker='X', s=100, ax=ax
-            )
-        
-        plt.title(f'Digging vs Leak Events - Chainage {target_chainage} ±{tolerance}km', fontsize=16, pad=20)
-        plt.xlabel('DateTime', fontsize=12)
-        plt.ylabel('Chainage (km)', fontsize=12)
-        plt.grid(True, alpha=0.3)
-        plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left')
-        plt.tight_layout()
-        
+        # 1. Load the dataset
+        df_scc_II = pd.read_excel(uploaded_file)
+        st.subheader("Original Dataset Preview")
+        st.dataframe(df_scc_II.head())
+
+        # 2. Normalize 'Distance from Pump(KM)'
+        scaler_distance = MinMaxScaler()
+        df_scc_II['Normalized_Distance_from_Pump(KM)'] = scaler_distance.fit_transform(df_scc_II[['Wd (ID)']])
+
+        # 3. Normalize 'OFF PSP (VE V)'
+        scaler_off_psp = MinMaxScaler()
+        df_scc_II['Normalized_OFF_PSP_VE_V'] = scaler_off_psp.fit_transform(df_scc_II[['OFF PSP (VE V)']])
+
+        # 4. Create the Inverse_Normalized_OFF_PSP_VE_V column
+        df_scc_II['Inverse_Normalized_OFF_PSP_VE_V'] = 1 - df_scc_II['Normalized_OFF_PSP_VE_V']
+
+        # 5. Define feature weights and calculate 'Stress_Corrosion_Probability_Score_Normalized_V2'
+        feature_weights_normalized = {
+            'conductivity': 0.186,
+            'Hoop stress% of SMYS': 0.08,
+            'Normalized_Distance_from_Pump(KM)': 0.165,
+            'Inverse_Normalized_OFF_PSP_VE_V': 0.142
+        }
+
+        df_scc_II['Stress_Corrosion_Probability_Score_Normalized_V2'] = (
+            df_scc_II['conductivity'] * feature_weights_normalized['conductivity']) + \
+            (df_scc_II['Hoop stress% of SMYS'] * feature_weights_normalized['Hoop stress% of SMYS']) + \
+            (df_scc_II['Normalized_Distance_from_Pump(KM)'] * feature_weights_normalized['Normalized_Distance_from_Pump(KM)']) + \
+            (df_scc_II['Inverse_Normalized_OFF_PSP_VE_V'] * feature_weights_normalized['Inverse_Normalized_OFF_PSP_VE_V'])
+
+        st.subheader("Processed Dataset Preview (with Normalized Score)")
+        st.dataframe(df_scc_II[['Stationing (m)', 'Stress_Corrosion_Probability_Score_Normalized_V2', 
+                               'Normalized_Distance_from_Pump(KM)', 'Inverse_Normalized_OFF_PSP_VE_V']].head())
+
+        # Key Metrics
+        col1, col2, col3 = st.columns(3)
+        high_risk_threshold_normalized = df_scc_II['Stress_Corrosion_Probability_Score_Normalized_V2'].quantile(0.95)
+        with col1:
+            st.metric("Mean SCC Score", f"{df_scc_II['Stress_Corrosion_Probability_Score_Normalized_V2'].mean():.4f}")
+        with col2:
+            st.metric("95th Percentile Threshold", f"{high_risk_threshold_normalized:.4f}")
+        with col3:
+            st.metric("High Risk Segments (>95th)", 
+                     (df_scc_II['Stress_Corrosion_Probability_Score_Normalized_V2'] > high_risk_threshold_normalized).sum())
+
+        # 6. Visualize the 'Stress_Corrosion_Probability_Score_Normalized_V2' - Exact replica
+        fig, ax = plt.subplots(figsize=(12, 7))
+        sns.scatterplot(x='Stationing (m)', y='Stress_Corrosion_Probability_Score_Normalized_V2', 
+                       data=df_scc_II, alpha=0.6, s=10, label='Normalized Stress Corrosion Probability Score per Stationing', ax=ax)
+        ax.axhline(y=high_risk_threshold_normalized, color='red', linestyle='--', 
+                  label=f'High Risk Threshold ({high_risk_threshold_normalized:.4f})')
+        ax.set_title('Normalized Stress Corrosion Probability Score vs. Stationing (m) in df_scc_II for CHAKSU MATHURA SECTION')
+        ax.set_xlabel('Stationing (m)')
+        ax.set_ylabel('Normalized Stress Corrosion Probability Score')
+        ax.legend()
+        ax.grid(True, linestyle='--', alpha=0.7)
         st.pyplot(fig)
-        st.balloons()
+        plt.close(fig)
 
-# --- All chainages analysis (optional, collapsible) ---
-if st.checkbox("🔄 Show ALL Unique Chainages Analysis"):
-    st.subheader("📈 Complete Chainage Analysis")
-    
-    unique_chainages = sorted(df_manual_digging['Original_chainage'].unique())
-    st.write(f"Found {len(unique_chainages)} unique chainages")
-    
-    tolerance_all = st.slider("Analysis Tolerance", 0.1, 2.0, 1.0)
-    
-    for chainage in unique_chainages[:20]:  # Limit to 20 to avoid memory issues
-        with st.expander(f"Chainage {chainage:.1f}"):
-            df_dig_loop = df_manual_digging[
-                abs(df_manual_digging['Original_chainage'] - chainage) <= tolerance_all
-            ]
-            df_leak_loop = df_lds_IV[
-                abs(df_lds_IV['chainage'] - chainage) <= tolerance_all
-            ]
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Digging", len(df_dig_loop))
-            col2.metric("Leaks", len(df_leak_loop))
-            
-            if len(df_dig_loop) + len(df_leak_loop) > 0:
-                plt.close('all')
-                fig_loop, ax_loop = plt.subplots(figsize=(14, 7))
-                
-                if not df_dig_loop.empty:
-                    sns.scatterplot(data=df_dig_loop, x='DateTime', y='Original_chainage',
-                                  color='blue', marker='o', s=50, ax=ax_loop)
-                if not df_leak_loop.empty:
-                    sns.scatterplot(data=df_leak_loop, x='DateTime', y='chainage',
-                                  color='red', marker='X', s=80, ax=ax_loop)
-                
-                plt.title(f'Chainage {chainage:.1f} ±{tolerance_all}')
-                plt.tight_layout()
-                st.pyplot(fig_loop)
+        st.success("Visualization completed successfully!")
 
-st.markdown("---")
-st.caption("💡 Upload files → Adjust chainage → Click Analyze → View correlations!")
+    except Exception as e:
+        st.error(f"Error processing file: {str(e)}")
+        st.code(traceback.format_exc())
+else:
+    st.info("👈 Please upload scc_IV_dataset.xlsx to get started. Ensure it contains columns: 'Stationing (m)', 'Distance from Pump(KM)', 'OFF PSP (VE V)', 'conductivity', 'Hoop stress% of SMYS'.")
