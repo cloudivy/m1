@@ -51,11 +51,11 @@ with tab2:
     # Data previews
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Manual Digging Data")
+        st.subheader("PIDWS Data")
         st.dataframe(df_manual_digging[['Event Duration', 'Original_chainage', 'DateTime']].head())
     
     with col2:
-        st.subheader("LDS IV Data") 
+        st.subheader("LDS Data") 
         st.dataframe(df_lds_IV.head())
     
     # Data prep (your exact code)
